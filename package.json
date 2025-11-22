@@ -1,0 +1,15 @@
+{
+  "name": "research-1.0",
+  "version": "1.0.0",
+  "description": "This is the desktop application created for the research project 25-26J-498",
+  "main": "index.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^39.2.3"
+  }
+}

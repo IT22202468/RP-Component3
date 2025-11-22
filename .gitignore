@@ -1,0 +1,80 @@
+# Node dependencies
+/node_modules/
+jspm_packages/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+*.log
+*.log.*
+
+# Runtime files
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Build / distribution / packaging artifacts
+/dist/
+/build/
+/out/
+/release/
+/release-builds/
+/dist-electron/
+electron-builder-cache/
+*.asar
+*.AppImage
+*.dmg
+*.exe
+*.msi
+*.deb
+*.snap
+*.rpm
+*.pkg
+
+# Temporary / cache
+.cache/
+.cache-loader/
+.npm/
+.eslintcache
+.parcel-cache/
+.vite/
+*.tmp
+
+# Coverage and test results
+coverage/
+.nyc_output/
+test-results/
+
+# Environment and secrets
+.env
+.env.*.local
+.env.local
+.env.production
+.env.test
+
+# Certificates / signing keys
+*.pem
+*.p12
+*.key
+*.crt
+*.cert
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Misc
+bower_components/
+*.local

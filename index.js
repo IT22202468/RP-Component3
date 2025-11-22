@@ -1,15 +1,17 @@
 const { app, BrowserWindow, ipcMain, Notification, dialog } = require('electron')
 const path = require('path')
+// systeminformation will let us query OS processes in a cross-platform way
+const si = require('systeminformation')
 
 function createWindow() {
   const win = new BrowserWindow({
     width: 800,
     height: 600,
     webPreferences: {
-      // For this simple example we enable nodeIntegration. For production
-      // apps prefer a preload script and keep contextIsolation=true.
-      nodeIntegration: true,
-      contextIsolation: false,
+      // Use a preload script and enable contextIsolation for a safer renderer.
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
     },
   })
 
@@ -81,6 +83,52 @@ ipcMain.handle('show-notification', async (event, { title, body, useDialog } = {
 
   notif.show()
   return { dialog: false }
+})
+
+// IPC handler to return a list of host OS processes with simplified fields
+// Returned fields: pid, name, cpu (percent), mem (bytes), started (iso), elapsed (ms), status
+ipcMain.handle('get-processes', async () => {
+  try {
+    const data = await si.processes()
+    const now = Date.now()
+
+    // data.list is an array of process infos
+    const simplified = (data && data.list ? data.list : []).map(p => {
+      const started = p.started || null // may be empty
+      let elapsed = null
+      if (started) {
+        try {
+          const s = new Date(started).getTime()
+          if (!Number.isNaN(s)) elapsed = Math.max(0, now - s)
+        } catch (e) {
+          elapsed = null
+        }
+      }
+
+      // Normalize state into a simple status: 'ongoing' or 'idle' or 'unknown'
+      const st = (p.state || '').toString().toLowerCase()
+      let status = 'unknown'
+      if (st.includes('run') || st === 'r' || st.includes('running')) status = 'ongoing'
+      else if (st.includes('sleep') || st.includes('idle') || st === 's') status = 'idle'
+
+      return {
+        pid: p.pid,
+        name: p.name || p.command || p.cmd || '',
+        cpu: typeof p.cpu === 'number' ? p.cpu : (p.pcpu || p.pcpuu || 0),
+        mem: typeof p.mem === 'number' ? p.mem : (p.pmem || 0),
+        started: started,
+        elapsed: elapsed,
+        status,
+        command: p.command || p.cmd || ''
+      }
+    })
+
+    // Sort by CPU desc then pid
+    simplified.sort((a, b) => (b.cpu || 0) - (a.cpu || 0) || (a.pid - b.pid))
+    return { ok: true, list: simplified }
+  } catch (err) {
+    return { ok: false, error: String(err) }
+  }
 })
 
 // (Removed) in-app toast handler and related code — using system notifications / dialogs only.

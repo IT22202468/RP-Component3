@@ -68,10 +68,254 @@
       <span id="status" style="margin-left:12px;color:#666;font-size:14px;"></span>
     </div>
 
+    <div style="margin-top:22px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+      <div>
+        <button id="refreshProcs">Refresh Processes</button>
+        <span style="margin-left:12px;color:#666;font-size:14px;">(Shows PID, name, cpu%, memory, start time, elapsed, status)</span>
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center;">
+        <label style="font-size:13px;color:#444;">Filter:</label>
+        <input id="procFilter" placeholder="name or pid" style="padding:6px;border-radius:6px;border:1px solid #ddd;min-width:180px;" />
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center;">
+        <label style="font-size:13px;color:#444;">Auto-refresh</label>
+        <!-- enabled by default -->
+        <input type="checkbox" id="autoRefreshChk" checked />
+        <label style="font-size:13px;color:#444;">Interval (s)</label>
+        <input type="number" id="autoInterval" value="5" min="1" style="width:64px;padding:6px;border-radius:6px;border:1px solid #ddd;" />
+      </div>
+    </div>
+
+    <div style="margin-top:12px; overflow:auto; max-height:320px;">
+      <table id="procTable" border="0" cellpadding="6" cellspacing="0" style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px;">
+        <thead>
+          <tr style="text-align:left;color:#333;border-bottom:1px solid #e6e6e6;">
+            <th>PID</th>
+            <th>Name</th>
+            <th id="thCpu" style="cursor:pointer">CPU%</th>
+            <th id="thMem" style="cursor:pointer">Mem</th>
+            <th>Started</th>
+            <th>Elapsed</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
     <script>
       // Use the main process Notification (via IPC) so we can add action buttons.
-      const isElectron = typeof window !== 'undefined' && window.process && window.process.versions && window.process.versions.electron
-      const statusEl = document.getElementById('status')
+    // ---------------------------
+    // Expose whether we're running under Electron with the preload API
+    const isElectron = typeof window !== 'undefined' && !!window.api
+    const statusEl = document.getElementById('status')
+
+    // ---------------------------
+    // Process list UI / IPC
+    // ---------------------------
+    async function fetchProcesses() {
+      if (isElectron && window.api) {
+        setStatus('Fetching processes...')
+        try {
+          const res = await window.api.getProcesses()
+          if (!res || !res.ok) {
+            setStatus('Failed to get processes: ' + (res && res.error ? res.error : 'unknown'))
+            return []
+          }
+          setStatus('Last updated: ' + new Date().toLocaleTimeString())
+          return res.list || []
+        } catch (err) {
+          setStatus('IPC error: ' + err.message)
+          return []
+        }
+      } else {
+        setStatus('Not running inside Electron — process info unavailable')
+        return []
+      }
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes && bytes !== 0) return ''
+      const units = ['B','KB','MB','GB','TB']
+      let i = 0
+      let v = bytes
+      while (v >= 1024 && i < units.length-1) { v /= 1024; i++ }
+      return v.toFixed(1) + ' ' + units[i]
+    }
+
+    function formatElapsed(ms) {
+      if (ms == null) return ''
+      const s = Math.floor(ms / 1000)
+      const days = Math.floor(s / 86400)
+      const hrs = Math.floor((s % 86400) / 3600)
+      const mins = Math.floor((s % 3600) / 60)
+      const secs = s % 60
+      if (days > 0) return `${days}d ${hrs}h ${mins}m`
+      if (hrs > 0) return `${hrs}h ${mins}m ${secs}s`
+      if (mins > 0) return `${mins}m ${secs}s`
+      return `${secs}s`
+    }
+
+    // Client-side filter state
+    let currentFilter = ''
+    let filterTimer = null
+
+    function applyFilter(list) {
+      const f = (currentFilter || '').trim().toLowerCase()
+      if (!f) return list
+      const asNum = Number(f)
+      return list.filter(p => {
+        if (!Number.isNaN(asNum) && asNum > 0 && p.pid === asNum) return true
+        const name = (p.name || p.command || '').toString().toLowerCase()
+        return name.includes(f)
+      })
+    }
+
+    function renderProcesses(list) {
+      const tbody = document.querySelector('#procTable tbody')
+      tbody.innerHTML = ''
+      // Apply sorting if requested
+      let working = Array.isArray(list) ? list.slice() : []
+      if (sortKey) {
+        working.sort((a, b) => {
+          const va = Number(a[sortKey] || 0)
+          const vb = Number(b[sortKey] || 0)
+          return (va - vb) * (sortDir === 'asc' ? 1 : -1)
+        })
+      }
+      const filtered = applyFilter(working)
+      for (const p of filtered) {
+        const tr = document.createElement('tr')
+        tr.style.borderBottom = '1px solid #f0f0f0'
+        tr.innerHTML = `
+          <td style="width:6%">${p.pid}</td>
+          <td style="width:32%">${escapeHtml(p.name || p.command || '')}</td>
+          <td style="width:8%">${(p.cpu || 0).toFixed ? (p.cpu||0).toFixed(1) : p.cpu}</td>
+          <td style="width:12%">${formatBytes(p.mem || 0)}</td>
+          <td style="width:18%">${p.started ? new Date(p.started).toLocaleString() : ''}</td>
+          <td style="width:12%">${formatElapsed(p.elapsed)}</td>
+          <td style="width:12%">${p.status}</td>
+        `
+        tbody.appendChild(tr)
+      }
+    }
+
+    // Sorting state
+    let sortKey = null // 'cpu' or 'mem'
+    let sortDir = 'desc' // 'asc' | 'desc'
+
+    function toggleSort(key) {
+      if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc'
+      else { sortKey = key; sortDir = 'desc' }
+      refreshAndRender()
+      updateHeaderIndicators()
+    }
+
+    function updateHeaderIndicators() {
+      const thCpu = document.getElementById('thCpu')
+      const thMem = document.getElementById('thMem')
+      if (thCpu) thCpu.textContent = 'CPU%' + (sortKey === 'cpu' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '')
+      if (thMem) thMem.textContent = 'Mem' + (sortKey === 'mem' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '')
+    }
+
+    // Auto-refresh logic
+    let autoRefreshTimer = null
+
+    async function refreshAndRender() {
+      const list = await fetchProcesses()
+      renderProcesses(list)
+    }
+
+    function startAutoRefresh() {
+      stopAutoRefresh()
+      const interval = Math.max(1, Number(document.getElementById('autoInterval').value || 5)) * 1000
+      autoRefreshTimer = setInterval(refreshAndRender, interval)
+      // run immediately
+      refreshAndRender()
+    }
+
+    function stopAutoRefresh() {
+      if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const refreshBtn = document.getElementById('refreshProcs')
+      const filterInput = document.getElementById('procFilter')
+      const autoChk = document.getElementById('autoRefreshChk')
+      const intervalInput = document.getElementById('autoInterval')
+
+      if (refreshBtn) {
+        refreshBtn.addEventListener('click', async () => {
+          const list = await fetchProcesses()
+          renderProcesses(list)
+        })
+      }
+
+      if (filterInput) {
+        filterInput.addEventListener('input', (ev) => {
+          currentFilter = ev.target.value || ''
+          // debounce render
+          if (filterTimer) clearTimeout(filterTimer)
+          filterTimer = setTimeout(async () => { const l = await fetchProcesses(); renderProcesses(l) }, 250)
+        })
+      }
+
+      // Load persisted auto-refresh preference
+      try {
+        const savedAuto = localStorage.getItem('proc_auto_refresh')
+        if (savedAuto !== null) autoChk.checked = savedAuto === '1'
+        const savedInterval = localStorage.getItem('proc_auto_interval')
+        if (savedInterval) intervalInput.value = Number(savedInterval)
+      } catch (e) { /* ignore storage errors */ }
+
+      if (autoChk) {
+        autoChk.addEventListener('change', (ev) => {
+          try { localStorage.setItem('proc_auto_refresh', ev.target.checked ? '1' : '0') } catch (e) {}
+          if (ev.target.checked) startAutoRefresh()
+          else stopAutoRefresh()
+        })
+      }
+
+      if (intervalInput) {
+        intervalInput.addEventListener('change', (ev) => {
+          try { localStorage.setItem('proc_auto_interval', String(ev.target.value)) } catch (e) {}
+          if (autoChk && autoChk.checked) startAutoRefresh()
+        })
+      }
+
+      // Hook up sorting header clicks
+      const thCpu = document.getElementById('thCpu')
+      const thMem = document.getElementById('thMem')
+      if (thCpu) thCpu.addEventListener('click', () => toggleSort('cpu'))
+      if (thMem) thMem.addEventListener('click', () => toggleSort('mem'))
+      updateHeaderIndicators()
+
+      // Auto-load once (still useful if auto-refresh disabled)
+      setTimeout(async () => { const l = await fetchProcesses(); renderProcesses(l) }, 500)
+
+      // If auto-refresh is checked by default, start polling immediately
+      try {
+        if (autoChk && autoChk.checked) startAutoRefresh()
+      } catch (e) {
+        // ignore if DOM isn't ready somehow
+      }
+    })
+
+    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[c]) }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const refreshBtn = document.getElementById('refreshProcs')
+      if (refreshBtn) {
+        refreshBtn.addEventListener('click', async () => {
+          const list = await fetchProcesses()
+          renderProcesses(list)
+        })
+      }
+      // Auto-load once
+      setTimeout(async () => { const l = await fetchProcesses(); renderProcesses(l) }, 500)
+    })
 
       function setStatus(msg) {
         if (statusEl) statusEl.textContent = msg
@@ -88,21 +332,16 @@
           const title = 'Research 1.0'
           const body = 'This is a notification from the app.'
 
-          if (isElectron && window.require) {
-            const { ipcRenderer } = require('electron')
-
-            // Request a system notification from the main process. The main
-            // handler will emit 'notification-response' when the user acts on
-            // the notification (or it closes).
-            ipcRenderer.once('notification-response', (ev, data) => {
-              if (data && data.result) {
-                setStatus('User chose: ' + data.result)
-                console.log('Notification response', data)
-              }
+          if (isElectron && window.api) {
+            // Register a one-time listener for the notification response
+            const unsub = window.api.onNotificationResponse((data) => {
+              if (data && data.result) setStatus('User chose: ' + data.result)
+              console.log('Notification response', data)
+              try { unsub() } catch (e) {}
             })
 
             try {
-              await ipcRenderer.invoke('show-notification', { title, body, useDialog: false })
+              await window.api.showNotification({ title, body, useDialog: false })
             } catch (err) {
               console.error('IPC error invoking notification:', err)
               setStatus('Failed to show notification: ' + err.message)

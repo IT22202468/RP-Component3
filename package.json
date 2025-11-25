@@ -10,7 +10,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "systeminformation": "^5.12.4"
+    "systeminformation": "^5.12.4",
+    "active-win": "^7.5.0"
   },
   "devDependencies": {
     "electron": "^39.2.3"

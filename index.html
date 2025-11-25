@@ -80,12 +80,26 @@
       </div>
 
       <div style="display:flex;gap:8px;align-items:center;">
+        <label style="font-size:13px;color:#444;">Notify when active</label>
+        <input type="checkbox" id="notifyOnActive" />
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center;">
         <label style="font-size:13px;color:#444;">Auto-refresh</label>
         <!-- enabled by default -->
         <input type="checkbox" id="autoRefreshChk" checked />
         <label style="font-size:13px;color:#444;">Interval (s)</label>
         <input type="number" id="autoInterval" value="5" min="1" style="width:64px;padding:6px;border-radius:6px;border:1px solid #ddd;" />
       </div>
+    </div>
+
+    <!-- Tabs: All / Ongoing -->
+    <div style="margin-top:12px; display:flex; gap:10px; align-items:center;">
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button id="tabAll" class="tab-btn" style="padding:6px 10px;border-radius:6px;border:1px solid #ddd;background:#fff;">All</button>
+        <button id="tabOngoing" class="tab-btn" style="padding:6px 10px;border-radius:6px;border:1px solid #ddd;background:#fff;">Ongoing <span id="ongoingCount" style="font-weight:600;margin-left:6px;color:#555">0</span></button>
+      </div>
+      <div style="margin-left:8px;color:#666;font-size:13px;">(Ongoing shows processes with status 'ongoing' running &gt; 1 min)</div>
     </div>
 
     <div style="margin-top:12px; overflow:auto; max-height:320px;">
@@ -206,6 +220,19 @@
     let sortKey = null // 'cpu' or 'mem'
     let sortDir = 'desc' // 'asc' | 'desc'
 
+    // Tab state
+    let currentTab = 'all' // 'all' | 'ongoing'
+
+    function setTab(t) {
+      currentTab = t
+      // update button styles
+      const tabAll = document.getElementById('tabAll')
+      const tabOngoing = document.getElementById('tabOngoing')
+      if (tabAll) tabAll.style.background = t === 'all' ? '#eef6ff' : '#fff'
+      if (tabOngoing) tabOngoing.style.background = t === 'ongoing' ? '#eef6ff' : '#fff'
+      refreshAndRender()
+    }
+
     function toggleSort(key) {
       if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc'
       else { sortKey = key; sortDir = 'desc' }
@@ -222,10 +249,81 @@
 
     // Auto-refresh logic
     let autoRefreshTimer = null
+  // Notification / alerting state
+  const notifyCooldownMs = 5 * 60 * 1000 // 5 minutes between notifications per app
+  const lastNotified = {} // map appName -> timestamp
 
     async function refreshAndRender() {
       const list = await fetchProcesses()
-      renderProcesses(list)
+      // update ongoing count
+      try {
+        const ongoingCountEl = document.getElementById('ongoingCount')
+        const ongoingCount = Array.isArray(list) ? list.filter(p => (p.status === 'ongoing') && (p.elapsed && p.elapsed > 60000)).length : 0
+        if (ongoingCountEl) ongoingCountEl.textContent = String(ongoingCount)
+      } catch (e) {}
+
+      // If notify-on-active is enabled and a filter target exists, send a notification
+      try {
+        const notifyChk = document.getElementById('notifyOnActive')
+        const target = (currentFilter || '').trim()
+        if (notifyChk && notifyChk.checked && target) {
+          // find a matching process (by PID or name substring) that is ongoing > 1min
+          const match = (Array.isArray(list) ? list : []).find(p => {
+            const isOngoing = p.status === 'ongoing' && p.elapsed && p.elapsed > 60000
+            if (!isOngoing) return false
+            const asNum = Number(target)
+            if (!Number.isNaN(asNum) && asNum > 0) return p.pid === asNum
+            const name = (p.name || p.command || '').toString().toLowerCase()
+            return name.includes(target.toLowerCase())
+          })
+          if (match) {
+            const appName = match.name || match.command || String(match.pid)
+            const now = Date.now()
+            const last = lastNotified[appName] || 0
+            if (now - last > notifyCooldownMs) {
+              // notify
+              const minutes = Math.max(1, Math.floor((match.elapsed || 0) / 60000))
+              const title = 'Focus reminder'
+              const body = `You are on ${appName} for ${minutes} minute${minutes>1?'s':''}. Let's get back to work`
+              try {
+                if (isElectron && window.api) {
+                  // register listener for eventual user action
+                  const unsub = window.api.onNotificationResponse((data) => {
+                    try { setStatus('User chose: ' + (data && data.result ? data.result : 'unknown')) } catch (e) {}
+                    try { unsub() } catch (e) {}
+                  })
+                  // ask main process to show a system notification (don't force dialog)
+                  try {
+                    const result = await window.api.showNotification({ title, body, useDialog: false })
+                    // If main process returned a dialog response synchronously (fallback), show it immediately
+                    if (result && result.dialog) {
+                      const resp = result.response
+                      setStatus('User chose: ' + (resp === 0 ? 'okay' : 'cancel'))
+                      try { unsub() } catch (e) {}
+                    }
+                  } catch (e) {
+                    // ignore
+                  }
+                } else {
+                  // Fallback: browser notification
+                  if (Notification.permission === 'granted') new Notification(title, { body })
+                }
+              } catch (e) {
+                // ignore
+              }
+              lastNotified[appName] = now
+            }
+          }
+        }
+      } catch (e) {}
+
+      // If currentTab is 'ongoing', filter list before rendering
+      if (currentTab === 'ongoing') {
+        const filteredList = (Array.isArray(list) ? list : []).filter(p => (p.status === 'ongoing') && (p.elapsed && p.elapsed > 60000))
+        renderProcesses(filteredList)
+      } else {
+        renderProcesses(list)
+      }
     }
 
     function startAutoRefresh() {
@@ -268,6 +366,9 @@
         if (savedAuto !== null) autoChk.checked = savedAuto === '1'
         const savedInterval = localStorage.getItem('proc_auto_interval')
         if (savedInterval) intervalInput.value = Number(savedInterval)
+        const savedNotify = localStorage.getItem('proc_notify_active')
+        const notifyChk = document.getElementById('notifyOnActive')
+        if (notifyChk && savedNotify !== null) notifyChk.checked = savedNotify === '1'
       } catch (e) { /* ignore storage errors */ }
 
       if (autoChk) {
@@ -275,6 +376,14 @@
           try { localStorage.setItem('proc_auto_refresh', ev.target.checked ? '1' : '0') } catch (e) {}
           if (ev.target.checked) startAutoRefresh()
           else stopAutoRefresh()
+        })
+      }
+
+      // Persist notify-on-active preference
+      const notifyChk = document.getElementById('notifyOnActive')
+      if (notifyChk) {
+        notifyChk.addEventListener('change', (ev) => {
+          try { localStorage.setItem('proc_notify_active', ev.target.checked ? '1' : '0') } catch (e) {}
         })
       }
 
@@ -291,6 +400,12 @@
       if (thCpu) thCpu.addEventListener('click', () => toggleSort('cpu'))
       if (thMem) thMem.addEventListener('click', () => toggleSort('mem'))
       updateHeaderIndicators()
+
+  // Hook up tabs
+  const tabAll = document.getElementById('tabAll')
+  const tabOngoing = document.getElementById('tabOngoing')
+  if (tabAll) tabAll.addEventListener('click', () => setTab('all'))
+  if (tabOngoing) tabOngoing.addEventListener('click', () => setTab('ongoing'))
 
       // Auto-load once (still useful if auto-refresh disabled)
       setTimeout(async () => { const l = await fetchProcesses(); renderProcesses(l) }, 500)
